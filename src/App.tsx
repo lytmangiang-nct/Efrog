@@ -528,6 +528,8 @@ Return JSON:
   const [imageMatchDescription, setImageMatchDescription] = useState('');
   const [imageMatchAnswer, setImageMatchAnswer] = useState('');
   const [imageMatchInput, setImageMatchInput] = useState('');
+  const [imageMatchPrompt, setImageMatchPrompt] = useState('');
+  const [imageMatchOptions, setImageMatchOptions] = useState<string[]>([]);
   
   // Pronunciation State
   const [pronunciationSentence, setPronunciationSentence] = useState('');
@@ -559,23 +561,34 @@ Return JSON:
     setEntertainmentSubView('word-scramble');
   };
 
+  const [imageRefreshKey, setImageRefreshKey] = useState(0);
+
   const startImageMatch = async () => {
     if (!user) return;
     setIsGeneratingGame(true);
     setEntertainmentSubView('image-match');
     setImageMatchInput('');
     setGameFeedback('');
+    setImageMatchOptions([]);
+    setImageRefreshKey(Date.now());
 
     try {
       const prompt = `Bạn là Quản trò Đầm Lầy Efrog. Hãy tạo một thử thách "Đuổi Hình Bắt Ếch".
-Hãy chọn một từ vựng tiếng Anh trình độ ${user.level} và mô tả một hình ảnh hoặc ngữ cảnh sinh động để người dùng đoán từ đó.
+Nhiệm vụ:
+1. Chọn một từ vựng tiếng Anh trình độ ${user.level} có tính BIỂU TƯỢNG cao.
+2. Viết một mô tả hóm hỉnh, gợi ý khéo léo bằng tiếng Việt về từ đó.
+3. Cung cấp "imagePrompt" là một đoạn mô tả tiếng Anh CHI TIẾT (khoảng 15-20 từ) để TẠO hình ảnh minh họa phong cách hoạt hình 3D dễ thương, phản ánh ĐÚNG nội dung mô tả hóm hỉnh ở trên (ví dụ: "A cute 3D cartoon spaceship flying through a galaxy of floating donuts, vibrant colors, high detail").
+4. Cung cấp đúng 4 phương án lựa chọn (1 đúng, 3 sai).
+
 Cấu trúc JSON:
 {
-  "description": "string (mô tả bằng tiếng Việt)",
-  "answer": "string (từ vựng tiếng Anh)",
+  "description": "string (mô tả hóm hỉnh)",
+  "answer": "string (từ vựng)",
+  "imagePrompt": "string (mô tả chi tiết để tạo ảnh bằng AI)",
+  "options": ["string", "string", "string", "string"],
   "phonetic": "string",
-  "meaning": "string (nghĩa tiếng Việt)",
-  "example": "string (ví dụ tiếng Anh)",
+  "meaning": "string",
+  "example": "string",
   "synonyms": ["string"],
   "antonyms": ["string"]
 }`;
@@ -590,12 +603,15 @@ Cấu trúc JSON:
             properties: {
               description: { type: Type.STRING },
               answer: { type: Type.STRING },
+              imagePrompt: { type: Type.STRING },
+              options: { type: Type.ARRAY, items: { type: Type.STRING } },
               phonetic: { type: Type.STRING },
               meaning: { type: Type.STRING },
               example: { type: Type.STRING },
               synonyms: { type: Type.ARRAY, items: { type: Type.STRING } },
               antonyms: { type: Type.ARRAY, items: { type: Type.STRING } }
-            }
+            },
+            required: ["description", "answer", "imagePrompt", "options", "phonetic", "meaning", "example", "synonyms", "antonyms"]
           }
         }
       });
@@ -603,6 +619,8 @@ Cấu trúc JSON:
       const data = JSON.parse(response.text || '{}');
       setImageMatchDescription(data.description);
       setImageMatchAnswer(data.answer);
+      setImageMatchPrompt(data.imagePrompt || data.answer);
+      setImageMatchOptions(data.options || []);
       // Store full word info for saving later
       (window as any).currentImageMatchWord = data;
     } catch (error) {
@@ -680,8 +698,9 @@ Cấu trúc JSON:
     }
   };
 
-  const handleImageMatchSubmit = () => {
-    if (imageMatchInput.toLowerCase() === imageMatchAnswer.toLowerCase()) {
+  const handleImageMatchSubmit = (selectedOption?: string) => {
+    const answer = selectedOption || imageMatchInput;
+    if (answer.toLowerCase() === imageMatchAnswer.toLowerCase()) {
       setGameFeedback("Tuyệt vời! Bạn đã đoán đúng và nhận 15 Nòng nọc! 🐸✨");
       
       const wordData = (window as any).currentImageMatchWord;
@@ -1084,10 +1103,10 @@ Cấu trúc JSON yêu cầu:
       )}
 
       {entertainmentSubView === 'image-match' && (
-        <section className="bg-white p-12 rounded-[40px] border-4 border-blue-100 shadow-2xl text-center space-y-8">
+        <section className="bg-white p-8 md:p-12 rounded-[40px] border-4 border-blue-100 shadow-2xl text-center space-y-8">
           <div className="space-y-2">
             <h3 className="text-3xl font-black text-blue-900 uppercase tracking-tighter">Đuổi Hình Bắt Ếch</h3>
-            <p className="text-blue-600 font-medium">Đoán từ vựng dựa trên mô tả sau:</p>
+            <p className="text-blue-600 font-medium">Nhìn hình và chọn từ vựng đúng nhất:</p>
           </div>
 
           {isGeneratingGame ? (
@@ -1096,19 +1115,71 @@ Cấu trúc JSON yêu cầu:
               <p className="text-blue-700 font-bold animate-pulse">Ếch Quản Trò đang vẽ hình...</p>
             </div>
           ) : (
-            <div className="bg-blue-50 p-8 rounded-3xl border-2 border-blue-100 italic text-blue-900 text-xl leading-relaxed">
-              "{imageMatchDescription}"
+            <div className="space-y-6">
+              {imageMatchPrompt && (
+                <div className="relative group max-w-md mx-auto">
+                  <motion.div
+                    initial={{ scale: 0.9, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    className="aspect-video rounded-3xl overflow-hidden border-4 border-blue-50 shadow-lg bg-blue-50 flex items-center justify-center"
+                  >
+                    <img 
+                      key={imageRefreshKey}
+                      src={`https://image.pollinations.ai/prompt/${encodeURIComponent(imageMatchPrompt + ' 3d cartoon style, vibrant colors, high resolution, simple background') || 'cute frog cartoon'}?width=600&height=400&nologo=true&seed=${imageRefreshKey}`} 
+                      alt="AI Generated Hint" 
+                      className="w-full h-full object-cover"
+                      referrerPolicy="no-referrer"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).src = `https://loremflickr.com/600/400/${encodeURIComponent(imageMatchPrompt.split(' ').join(','))},cartoon/all?lock=${imageRefreshKey}`;
+                      }}
+                    />
+                  </motion.div>
+                  <button 
+                    onClick={() => setImageRefreshKey(Date.now())}
+                    className="absolute -top-2 -right-2 bg-white p-2 rounded-full shadow-md hover:bg-blue-50 transition-colors text-blue-600 border border-blue-100"
+                    title="Đổi hình ảnh khác"
+                  >
+                    <Sparkles size={16} />
+                  </button>
+                  <div className="absolute -bottom-4 -right-4 bg-blue-600 text-white p-3 rounded-2xl shadow-xl rotate-6 group-hover:rotate-0 transition-all">
+                    <ImageIcon size={24} />
+                  </div>
+                </div>
+              )}
+              
+              <div className="bg-blue-50 p-6 rounded-3xl border-2 border-blue-100 italic text-blue-900 text-lg leading-relaxed">
+                "{imageMatchDescription}"
+              </div>
             </div>
           )}
 
-          <div className="max-w-md mx-auto space-y-4">
-            <input
-              type="text"
-              value={imageMatchInput}
-              onChange={(e) => setImageMatchInput(e.target.value)}
-              placeholder="Từ vựng là gì nhỉ?"
-              className="w-full bg-blue-50 border-2 border-blue-200 rounded-2xl py-4 px-6 text-center text-2xl font-bold text-blue-900 outline-none focus:border-blue-500 transition-all"
-            />
+          <div className="max-w-2xl mx-auto space-y-6">
+            {imageMatchOptions.length > 0 ? (
+              <div className="grid grid-cols-2 gap-4">
+                {imageMatchOptions.map((option, idx) => (
+                  <motion.button
+                    key={idx}
+                    whileHover={{ scale: 1.05, y: -2 }}
+                    whileTap={{ scale: 0.95 }}
+                    onClick={() => handleImageMatchSubmit(option)}
+                    className="bg-white border-2 border-blue-100 p-4 rounded-2xl font-bold text-blue-900 hover:border-blue-500 hover:bg-blue-50 transition-all shadow-sm"
+                  >
+                    {option}
+                  </motion.button>
+                ))}
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <input
+                  type="text"
+                  value={imageMatchInput}
+                  onChange={(e) => setImageMatchInput(e.target.value)}
+                  placeholder="Từ vựng là gì nhỉ?"
+                  className="w-full bg-blue-50 border-2 border-blue-200 rounded-2xl py-4 px-6 text-center text-2xl font-bold text-blue-900 outline-none focus:border-blue-500 transition-all"
+                />
+              </div>
+            )}
+
             <div className="flex gap-4">
               <button
                 onClick={startImageMatch}
@@ -1116,12 +1187,14 @@ Cấu trúc JSON yêu cầu:
               >
                 CÂU KHÁC
               </button>
-              <button
-                onClick={handleImageMatchSubmit}
-                className="flex-[2] bg-blue-600 text-white py-4 rounded-2xl font-black text-xl hover:bg-blue-700 transition-all shadow-lg"
-              >
-                ĐOÁN NGAY
-              </button>
+              {!imageMatchOptions.length && (
+                <button
+                  onClick={() => handleImageMatchSubmit()}
+                  className="flex-[2] bg-blue-600 text-white py-4 rounded-2xl font-black text-xl hover:bg-blue-700 transition-all shadow-lg"
+                >
+                  ĐOÁN NGAY
+                </button>
+              )}
             </div>
           </div>
 
