@@ -1,0 +1,7 @@
+{
+  "name": "Efrog người bạn đồng hành",
+  "description": "Hệ thống học tiếng Anh thông thái với đề thi độc bản, tra cứu từ vựng AI và Đầm Lầy Giải Trí cá nhân hóa.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}

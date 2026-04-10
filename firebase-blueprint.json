@@ -1,0 +1,26 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "Stores user progress, rewards, and settings.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "The unique ID of the user." },
+        "fullName": { "type": "string", "description": "The user's display name." },
+        "email": { "type": "string", "description": "The user's email address." },
+        "level": { "type": "string", "enum": ["Tập sự", "Thông thái", "Tiến sĩ"], "description": "The user's current learning level." },
+        "streak": { "type": "integer", "description": "The number of consecutive learning days." },
+        "tadpoles": { "type": "integer", "description": "The amount of virtual currency earned." },
+        "inventory": { "type": "array", "items": { "type": "string" }, "description": "List of purchased items from the store." },
+        "lastLessonDate": { "type": "string", "format": "date-time", "description": "The last time the user completed a lesson." }
+      },
+      "required": ["uid", "fullName", "email", "level", "streak", "tadpoles", "inventory"]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": "UserProfile",
+      "description": "User profiles indexed by their Firebase Auth UID."
+    }
+  }
+}
