@@ -112,7 +112,7 @@ interface UserProfile {
   hasSeenDay5Scenario?: boolean;
 }
 
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
@@ -240,17 +240,12 @@ export default function App() {
 
     try {
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+        model: "gemini-3.1-flash-lite-preview",
         contents: `Create a "Warm-up" drill for the English lesson: "${selectedLesson.title}".
         Level: ${user.level}.
-        Content: ${selectedLesson.content}.
-        
-        Structure:
-        1. Vocabulary: 5 matching pairs (word and definition), 3 contextual gap-fill sentences.
-        2. Grammar: 3 error identification sentences (with error, correction, and quick tip), 2 sentence transformation exercises (with original, prompt, answer, and quick tip).
-        
-        Return JSON format.`,
+        Content: ${selectedLesson.content}.`,
         config: {
+          systemInstruction: "You are a curriculum expert for Efrog. Generate a concise Warm-up drill in JSON format. 1. Vocabulary: 5 matching pairs, 3 gap-fill. 2. Grammar: 3 error identification, 2 sentence transformation.",
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
@@ -337,29 +332,11 @@ export default function App() {
     setLookupResult(null);
 
     try {
-      const prompt = `Bạn là Chuyên gia Từ vựng của Efrog. Hãy giải nghĩa từ/cụm từ "${lookupWord}" cho người dùng trình độ ${user.level}.
-Yêu cầu:
-1. Giải nghĩa ngắn gọn, dễ hiểu.
-2. Cung cấp phiên âm chuẩn.
-3. Đưa ra 3 ví dụ minh họa sinh động (không dùng ví dụ kinh điển), kèm dịch nghĩa.
-4. Liệt kê từ đồng nghĩa và trái nghĩa.
-5. "Frog Tip": Một mẹo nhỏ hoặc cách ghi nhớ từ này theo phong cách Efrog.
-
-Return JSON:
-{
-  "word": "string",
-  "phonetic": "string",
-  "meaning": "string",
-  "examples": [{"en": "string", "vi": "string"}],
-  "synonyms": ["string"],
-  "antonyms": ["string"],
-  "frogTip": "string"
-}`;
-
       const response = await ai.models.generateContent({
         model: "gemini-3.1-flash-lite-preview",
-        contents: prompt,
+        contents: `Giải nghĩa từ: "${lookupWord}"`,
         config: {
+          systemInstruction: "Bạn là Chuyên gia Từ vựng Efrog. Giải nghĩa cho trình độ " + user.level + ". Cung cấp phiên âm, 3 ví dụ sinh động (EN-VI), từ đồng/trái nghĩa và 'Frog Tip' hóm hỉnh. Trả về JSON.",
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
@@ -523,6 +500,8 @@ Return JSON:
   const [originalWord, setOriginalWord] = useState('');
   const [scrambledWord, setScrambledWord] = useState('');
   const [scrambleInput, setScrambleInput] = useState('');
+  const [scrambleHint, setScrambleHint] = useState('');
+  const [isGeneratingScramble, setIsGeneratingScramble] = useState(false);
   
   // Image Match State
   const [imageMatchDescription, setImageMatchDescription] = useState('');
@@ -535,6 +514,11 @@ Return JSON:
   const [pronunciationSentence, setPronunciationSentence] = useState('');
   const [isListening, setIsListening] = useState(false);
   const [pronunciationResult, setPronunciationResult] = useState<{ score: number; feedback: string; transcript: string } | null>(null);
+  const [pronunciationDifficulty, setPronunciationDifficulty] = useState<'Easy' | 'Medium' | 'Hard'>('Easy');
+  const [pronunciationStep, setPronunciationStep] = useState(0);
+  const [pronunciationScores, setPronunciationScores] = useState<number[]>([]);
+  const [pronunciationSessionQuestions, setPronunciationSessionQuestions] = useState<any[]>([]);
+  const [pronunciationSubViewMode, setPronunciationSubViewMode] = useState<'difficulty-select' | 'playing' | 'summary'>('difficulty-select');
 
   const [translatorInputText, setTranslatorInputText] = useState('');
 
@@ -547,18 +531,54 @@ Return JSON:
     }
   };
 
-  const startWordScramble = () => {
-    if (!user || !user.notebook || user.notebook.length === 0) {
-      setGameFeedback("Sổ tay của bạn đang trống! Hãy học thêm từ vựng để chơi nhé.");
-      return;
-    }
-    const randomNote = user.notebook[Math.floor(Math.random() * user.notebook.length)];
-    const word = randomNote.word;
-    setOriginalWord(word);
-    setScrambledWord(word.split('').sort(() => Math.random() - 0.5).join(''));
+  const startWordScramble = async () => {
+    if (!user) return;
+    setIsGeneratingScramble(true);
+    setEntertainmentSubView('word-scramble');
     setScrambleInput('');
     setGameFeedback('');
-    setEntertainmentSubView('word-scramble');
+    setScrambleHint('');
+
+    try {
+      const response = await ai.models.generateContent({
+        model: "gemini-3.1-flash-lite-preview",
+        contents: `Chọn một từ vựng tiếng Anh trình độ ${user.level} cho trò chơi "Ếch Nhảy Chữ".`,
+        config: {
+          systemInstruction: "Bạn là Quản trò Efrog. Chọn 1 từ (5-10 ký tự) và nghĩa tiếng Việt. Ưu tiên từ hữu ích. Trả về JSON: {word, meaning}",
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              word: { type: Type.STRING },
+              meaning: { type: Type.STRING }
+            },
+            required: ["word", "meaning"]
+          }
+        }
+      });
+
+      const data = JSON.parse(response.text || '{}');
+      const word = data.word.trim();
+      setOriginalWord(word);
+      setScrambleHint(data.meaning);
+      
+      // Ensure scrambled word is actually different
+      let scrambled = word;
+      while (scrambled === word && word.length > 1) {
+        scrambled = word.split('').sort(() => Math.random() - 0.5).join('');
+      }
+      setScrambledWord(scrambled);
+    } catch (error) {
+      console.error("Error starting word scramble:", error);
+      // Fallback to notebook if AI fails
+      if (user.notebook && user.notebook.length > 0) {
+        const randomNote = user.notebook[Math.floor(Math.random() * user.notebook.length)];
+        setOriginalWord(randomNote.word);
+        setScrambledWord(randomNote.word.split('').sort(() => Math.random() - 0.5).join(''));
+      }
+    } finally {
+      setIsGeneratingScramble(false);
+    }
   };
 
   const [imageRefreshKey, setImageRefreshKey] = useState(0);
@@ -573,30 +593,11 @@ Return JSON:
     setImageRefreshKey(Date.now());
 
     try {
-      const prompt = `Bạn là Quản trò Đầm Lầy Efrog. Hãy tạo một thử thách "Đuổi Hình Bắt Ếch".
-Nhiệm vụ:
-1. Chọn một từ vựng tiếng Anh trình độ ${user.level} có tính BIỂU TƯỢNG cao.
-2. Viết một mô tả hóm hỉnh, gợi ý khéo léo bằng tiếng Việt về từ đó.
-3. Cung cấp "imagePrompt" là một đoạn mô tả tiếng Anh CHI TIẾT (khoảng 15-20 từ) để TẠO hình ảnh minh họa phong cách hoạt hình 3D dễ thương, phản ánh ĐÚNG nội dung mô tả hóm hỉnh ở trên (ví dụ: "A cute 3D cartoon spaceship flying through a galaxy of floating donuts, vibrant colors, high detail").
-4. Cung cấp đúng 4 phương án lựa chọn (1 đúng, 3 sai).
-
-Cấu trúc JSON:
-{
-  "description": "string (mô tả hóm hỉnh)",
-  "answer": "string (từ vựng)",
-  "imagePrompt": "string (mô tả chi tiết để tạo ảnh bằng AI)",
-  "options": ["string", "string", "string", "string"],
-  "phonetic": "string",
-  "meaning": "string",
-  "example": "string",
-  "synonyms": ["string"],
-  "antonyms": ["string"]
-}`;
-
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: prompt,
+        model: "gemini-3.1-flash-lite-preview",
+        contents: `Tạo thử thách "Đuổi Hình Bắt Ếch" trình độ ${user.level}.`,
         config: {
+          systemInstruction: "Bạn là Quản trò Efrog. Chọn 1 từ vựng, viết mô tả hóm hỉnh (VN), imagePrompt (EN, 3D cartoon style), và 4 phương án. Trả về JSON.",
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
@@ -630,46 +631,61 @@ Cấu trúc JSON:
     }
   };
 
-  const startPronunciation = async () => {
+  const startPronunciation = async (difficulty?: 'Easy' | 'Medium' | 'Hard' | any) => {
     if (!user) return;
+    
+    // If called from onClick={startPronunciation}, difficulty will be an event object
+    if (!difficulty || typeof difficulty !== 'string') {
+      setPronunciationSubViewMode('difficulty-select');
+      setEntertainmentSubView('pronunciation');
+      return;
+    }
+
+    const selectedDiff = difficulty;
+    setPronunciationDifficulty(selectedDiff);
     setIsGeneratingGame(true);
     setEntertainmentSubView('pronunciation');
+    setPronunciationSubViewMode('playing');
     setPronunciationResult(null);
     setGameFeedback('');
+    setPronunciationStep(0);
+    setPronunciationScores([]);
 
     try {
-      const prompt = `Bạn là Huấn luyện viên ngôn ngữ Efrog. Hãy đưa ra một câu tiếng Anh hay (ưu tiên cấu trúc khó như đảo ngữ, câu điều kiện) để người dùng luyện phát âm (Shadowing) cho trình độ ${user.level}.
-Cấu trúc JSON:
-{
-  "sentence": "string",
-  "mainWord": {
-    "word": "string (từ quan trọng nhất trong câu)",
-    "phonetic": "string",
-    "meaning": "string",
-    "example": "string",
-    "synonyms": ["string"],
-    "antonyms": ["string"]
-  }
-}`;
+      const difficultyPrompt = {
+        'Easy': 'very short, basic A1 vocabulary, 3-5 words',
+        'Medium': 'medium length, A2-B1 structures, 6-10 words',
+        'Hard': 'complex B2-C1 structures, idioms, 10+ words'
+      }[selectedDiff];
 
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: prompt,
+        model: "gemini-3.1-flash-lite-preview",
+        contents: `Generate 5 ${selectedDiff} pronunciation sentences.`,
         config: {
+          systemInstruction: `You are Efrog Coach. Generate 5 English sentences (${difficultyPrompt}) with main word details in JSON. Keep it extremely simple for Easy level.`,
           responseMimeType: "application/json",
+          thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
           responseSchema: {
             type: Type.OBJECT,
             properties: {
-              sentence: { type: Type.STRING },
-              mainWord: {
-                type: Type.OBJECT,
-                properties: {
-                  word: { type: Type.STRING },
-                  phonetic: { type: Type.STRING },
-                  meaning: { type: Type.STRING },
-                  example: { type: Type.STRING },
-                  synonyms: { type: Type.ARRAY, items: { type: Type.STRING } },
-                  antonyms: { type: Type.ARRAY, items: { type: Type.STRING } }
+              questions: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    sentence: { type: Type.STRING },
+                    mainWord: {
+                      type: Type.OBJECT,
+                      properties: {
+                        word: { type: Type.STRING },
+                        phonetic: { type: Type.STRING },
+                        meaning: { type: Type.STRING },
+                        example: { type: Type.STRING },
+                        synonyms: { type: Type.ARRAY, items: { type: Type.STRING } },
+                        antonyms: { type: Type.ARRAY, items: { type: Type.STRING } }
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -678,13 +694,43 @@ Cấu trúc JSON:
       });
 
       const data = JSON.parse(response.text || '{}');
-      setPronunciationSentence(data.sentence);
-      (window as any).currentPronunciationWord = data.mainWord;
+      const questions = data.questions || [];
+      setPronunciationSessionQuestions(questions);
+      if (questions.length > 0) {
+        setPronunciationSentence(questions[0].sentence);
+        (window as any).currentPronunciationWord = questions[0].mainWord;
+      }
     } catch (error) {
       console.error("Error starting pronunciation:", error);
     } finally {
       setIsGeneratingGame(false);
     }
+  };
+
+  const nextPronunciationStep = () => {
+    const nextStep = pronunciationStep + 1;
+    if (nextStep < pronunciationSessionQuestions.length) {
+      setPronunciationStep(nextStep);
+      setPronunciationResult(null);
+      setPronunciationSentence(pronunciationSessionQuestions[nextStep].sentence);
+      (window as any).currentPronunciationWord = pronunciationSessionQuestions[nextStep].mainWord;
+    } else {
+      setPronunciationSubViewMode('summary');
+    }
+  };
+
+  const prevPronunciationStep = () => {
+    if (pronunciationStep > 0) {
+      const prevStep = pronunciationStep - 1;
+      setPronunciationStep(prevStep);
+      setPronunciationResult(null);
+      setPronunciationSentence(pronunciationSessionQuestions[prevStep].sentence);
+      (window as any).currentPronunciationWord = pronunciationSessionQuestions[prevStep].mainWord;
+    }
+  };
+
+  const finishPronunciationSession = () => {
+    setPronunciationSubViewMode('summary');
   };
 
   const handleScrambleSubmit = () => {
@@ -745,7 +791,22 @@ Cấu trúc JSON:
     recognition.maxAlternatives = 1;
 
     setIsListening(true);
+    setGameFeedback('');
     recognition.start();
+
+    recognition.onerror = (event: any) => {
+      setIsListening(false);
+      if (event.error === 'not-allowed') {
+        setGameFeedback("Lỗi: Không thể truy cập Micro. Hãy kiểm tra cài đặt quyền của trình duyệt và cho phép ứng dụng sử dụng Micro nhé!");
+      } else {
+        setGameFeedback(`Lỗi nhận diện giọng nói: ${event.error}`);
+      }
+      console.error("Speech recognition error:", event.error);
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+    };
 
     recognition.onresult = async (event: any) => {
       const transcript = event.results[0][0].transcript;
@@ -754,23 +815,11 @@ Cấu trúc JSON:
       // Use Gemini to analyze pronunciation
       setIsGeneratingGame(true);
       try {
-        const prompt = `Bạn là Huấn luyện viên ngôn ngữ Efrog. Người dùng vừa đọc câu: "${pronunciationSentence}".
-Kết quả nhận diện giọng nói là: "${transcript}".
-Hãy chấm điểm phát âm trên thang điểm 100 và đưa ra nhận xét ngắn gọn, vui vẻ.
-Nếu điểm >= 90: Perfect (30 Nòng nọc).
-Nếu điểm >= 70: Good (15 Nòng nọc).
-Nếu điểm < 70: Needs Practice.
-Cấu trúc JSON:
-{
-  "score": number,
-  "feedback": "string",
-  "status": "Perfect" | "Good" | "Needs Practice"
-}`;
-
         const response = await ai.models.generateContent({
-          model: "gemini-3-flash-preview",
-          contents: prompt,
+          model: "gemini-3.1-flash-lite-preview",
+          contents: `Câu gốc: "${pronunciationSentence}". Người dùng đọc: "${transcript}".`,
           config: {
+            systemInstruction: "Bạn là Huấn luyện viên Efrog. Chấm điểm phát âm (0-100) và nhận xét hóm hỉnh. Trả về JSON: {score, feedback, status: 'Perfect'|'Good'|'Needs Practice'}. Ngưỡng: Perfect >= 90, Good >= 70.",
             responseMimeType: "application/json",
             responseSchema: {
               type: Type.OBJECT,
@@ -785,6 +834,7 @@ Cấu trúc JSON:
 
         const data = JSON.parse(response.text || '{}');
         setPronunciationResult({ score: data.score, feedback: data.feedback, transcript });
+        setPronunciationScores(prev => [...prev, data.score]);
         
         let tadpolesBonus = 0;
         if (data.status === 'Perfect') tadpolesBonus = 30;
@@ -852,36 +902,11 @@ Cấu trúc JSON:
     setTranslatorInput(text);
 
     try {
-      const prompt = `Bạn là Trợ lý Ngôn ngữ của Efrog. Hãy phân tích đoạn văn bản sau cho người dùng trình độ ${user.level}:
-"${text}"
-
-Nhiệm vụ:
-1. Dịch sát nghĩa (Literal): Giúp hiểu cấu trúc câu.
-2. Dịch thoát ý (Idiomatic): Giúp hiểu văn phong tự nhiên.
-3. Phân tích ngữ pháp: Chỉ ra các cấu trúc chính.
-4. Trích xuất 3-5 từ vựng "đắt giá" (C1/C2 nếu là Tiến sĩ) và tạo Sticky Notes.
-
-Cấu trúc JSON yêu cầu:
-{
-  "literal": "string",
-  "idiomatic": "string",
-  "grammarAnalysis": "string",
-  "stickyNotes": [
-    {
-      "word": "string",
-      "phonetic": "string",
-      "meaning": "string",
-      "example": "string",
-      "synonyms": ["string"],
-      "antonyms": ["string"]
-    }
-  ]
-}`;
-
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: prompt,
+        model: "gemini-3.1-flash-lite-preview",
+        contents: `Phân tích văn bản: "${text}"`,
         config: {
+          systemInstruction: "Bạn là Trợ lý Ngôn ngữ Efrog. Phân tích văn bản cho người dùng trình độ " + user.level + ". Cung cấp dịch sát nghĩa, dịch thoát ý, phân tích ngữ pháp và trích xuất 3-5 từ vựng quan trọng (sticky notes). Trả về JSON.",
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
@@ -997,7 +1022,7 @@ Cấu trúc JSON yêu cầu:
 
           <motion.button
             whileHover={{ scale: 1.05, y: -5 }}
-            onClick={startPronunciation}
+            onClick={() => startPronunciation()}
             className="bg-white p-8 rounded-[40px] border-4 border-purple-100 shadow-xl text-center space-y-4 group"
           >
             <div className="w-20 h-20 bg-purple-100 rounded-full flex items-center justify-center mx-auto group-hover:bg-purple-200 transition-colors">
@@ -1049,43 +1074,60 @@ Cấu trúc JSON yêu cầu:
             <p className="text-emerald-600 font-medium">Hãy sắp xếp lại các chữ cái sau thành từ đúng:</p>
           </div>
 
-          <div className="flex justify-center gap-2 flex-wrap">
-            {scrambledWord.split('').map((char, i) => (
-              <motion.div
-                key={i}
-                initial={{ y: 20, opacity: 0 }}
-                animate={{ y: 0, opacity: 1 }}
-                transition={{ delay: i * 0.05 }}
-                className="w-12 h-12 bg-emerald-500 text-white rounded-xl flex items-center justify-center text-2xl font-black shadow-lg"
-              >
-                {char.toUpperCase()}
-              </motion.div>
-            ))}
-          </div>
-
-          <div className="max-w-md mx-auto space-y-4">
-            <input
-              type="text"
-              value={scrambleInput}
-              onChange={(e) => setScrambleInput(e.target.value)}
-              placeholder="Nhập từ của bạn..."
-              className="w-full bg-emerald-50 border-2 border-emerald-200 rounded-2xl py-4 px-6 text-center text-2xl font-bold text-emerald-900 outline-none focus:border-emerald-500 transition-all"
-            />
-            <div className="flex gap-4">
-              <button
-                onClick={startWordScramble}
-                className="flex-1 bg-emerald-100 text-emerald-700 py-4 rounded-2xl font-bold hover:bg-emerald-200 transition-all"
-              >
-                ĐỔI TỪ KHÁC
-              </button>
-              <button
-                onClick={handleScrambleSubmit}
-                className="flex-[2] bg-emerald-600 text-white py-4 rounded-2xl font-black text-xl hover:bg-emerald-700 transition-all shadow-lg"
-              >
-                KIỂM TRA
-              </button>
+          {isGeneratingScramble ? (
+            <div className="py-12 flex flex-col items-center gap-4">
+              <div className="w-12 h-12 border-4 border-emerald-600 border-t-transparent rounded-full animate-spin" />
+              <p className="text-emerald-700 font-bold animate-pulse">Ếch đang xáo trộn chữ cái...</p>
             </div>
-          </div>
+          ) : (
+            <>
+              <div className="flex justify-center gap-2 flex-wrap">
+                {scrambledWord.split('').map((char, i) => (
+                  <motion.div
+                    key={`${originalWord}-${i}`}
+                    initial={{ y: 20, opacity: 0 }}
+                    animate={{ y: 0, opacity: 1 }}
+                    transition={{ delay: i * 0.05 }}
+                    className="w-12 h-12 bg-emerald-500 text-white rounded-xl flex items-center justify-center text-2xl font-black shadow-lg"
+                  >
+                    {char.toUpperCase()}
+                  </motion.div>
+                ))}
+              </div>
+
+              {scrambleHint && (
+                <div className="bg-emerald-50 p-4 rounded-2xl border-2 border-emerald-100 inline-block mx-auto">
+                  <p className="text-emerald-700 text-sm font-bold">Gợi ý: <span className="italic font-medium">{scrambleHint}</span></p>
+                </div>
+              )}
+
+              <div className="max-w-md mx-auto space-y-4">
+                <input
+                  type="text"
+                  value={scrambleInput}
+                  onChange={(e) => setScrambleInput(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleScrambleSubmit()}
+                  placeholder="Nhập từ của bạn..."
+                  className="w-full bg-emerald-50 border-2 border-emerald-200 rounded-2xl py-4 px-6 text-center text-2xl font-bold text-emerald-900 outline-none focus:border-emerald-500 transition-all"
+                />
+                <div className="flex gap-4">
+                  <button
+                    onClick={startWordScramble}
+                    disabled={isGeneratingScramble}
+                    className="flex-1 bg-emerald-100 text-emerald-700 py-4 rounded-2xl font-bold hover:bg-emerald-200 transition-all disabled:opacity-50"
+                  >
+                    ĐỔI TỪ KHÁC
+                  </button>
+                  <button
+                    onClick={handleScrambleSubmit}
+                    className="flex-[2] bg-emerald-600 text-white py-4 rounded-2xl font-black text-xl hover:bg-emerald-700 transition-all shadow-lg"
+                  >
+                    KIỂM TRA
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
 
           {gameFeedback && (
             <motion.p
@@ -1215,77 +1257,207 @@ Cấu trúc JSON yêu cầu:
 
       {entertainmentSubView === 'pronunciation' && (
         <section className="bg-white p-12 rounded-[40px] border-4 border-purple-100 shadow-2xl text-center space-y-8">
-          <div className="space-y-2">
-            <h3 className="text-3xl font-black text-purple-900 uppercase tracking-tighter">Tiếng Ếch Ộp</h3>
-            <p className="text-purple-600 font-medium">Hãy luyện giọng để trở thành ca sĩ của Đầm Lầy nào!</p>
-          </div>
+          {pronunciationSubViewMode === 'difficulty-select' ? (
+            <div className="space-y-8">
+              <div className="space-y-2">
+                <h3 className="text-3xl font-black text-purple-900 uppercase tracking-tighter">Tiếng Ếch Ộp</h3>
+                <p className="text-purple-600 font-medium">Chọn cấp độ để bắt đầu luyện giọng nào!</p>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {(['Easy', 'Medium', 'Hard'] as const).map((diff) => (
+                  <motion.button
+                    key={diff}
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    onClick={() => startPronunciation(diff)}
+                    className={cn(
+                      "p-8 rounded-3xl border-4 font-black text-xl transition-all",
+                      diff === 'Easy' ? "bg-emerald-50 border-emerald-100 text-emerald-700 hover:border-emerald-500" :
+                      diff === 'Medium' ? "bg-blue-50 border-blue-100 text-blue-700 hover:border-blue-500" :
+                      "bg-red-50 border-red-100 text-red-700 hover:border-red-500"
+                    )}
+                  >
+                    {diff}
+                  </motion.button>
+                ))}
+              </div>
+            </div>
+          ) : pronunciationSubViewMode === 'playing' ? (
+            <div className="space-y-8">
+              <div className="space-y-2">
+                <div className="flex justify-between items-center mb-4">
+                  <div className="flex items-center gap-4">
+                    <button 
+                      onClick={() => setPronunciationSubViewMode('difficulty-select')}
+                      className="p-2 hover:bg-purple-50 rounded-full text-purple-600 transition-colors"
+                    >
+                      <ArrowLeft size={24} />
+                    </button>
+                    <h3 className="text-xl font-black text-purple-900 uppercase tracking-tighter">Tiếng Ếch Ộp - {pronunciationDifficulty}</h3>
+                  </div>
+                  <span className="bg-purple-100 text-purple-700 px-4 py-1 rounded-full font-bold">Câu {pronunciationStep + 1}/5</span>
+                </div>
+                <div className="w-full h-2 bg-purple-50 rounded-full overflow-hidden">
+                  <motion.div 
+                    className="h-full bg-purple-500"
+                    initial={{ width: 0 }}
+                    animate={{ width: `${((pronunciationStep + 1) / 5) * 100}%` }}
+                  />
+                </div>
+              </div>
 
-          {isGeneratingGame ? (
-            <div className="py-12 flex flex-col items-center gap-4">
-              <div className="w-12 h-12 border-4 border-purple-600 border-t-transparent rounded-full animate-spin" />
-              <p className="text-purple-700 font-bold animate-pulse">Ếch Huấn Luyện Viên đang chọn bài hát...</p>
+              {isGeneratingGame ? (
+                <div className="py-12 flex flex-col items-center gap-4">
+                  <div className="w-12 h-12 border-4 border-purple-600 border-t-transparent rounded-full animate-spin" />
+                  <p className="text-purple-700 font-bold animate-pulse">Ếch Huấn Luyện Viên đang soạn bài...</p>
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  <div className="bg-purple-50 p-8 rounded-3xl border-2 border-purple-100 space-y-4">
+                    <p className="text-purple-900 text-2xl font-bold leading-relaxed">
+                      "{pronunciationSentence}"
+                    </p>
+                    <button 
+                      onClick={() => speak(pronunciationSentence)}
+                      className="bg-purple-200 text-purple-700 p-3 rounded-full hover:bg-purple-300 transition-all"
+                    >
+                      <Volume2 size={24} />
+                    </button>
+                  </div>
+
+                  <div className="flex flex-col items-center gap-6">
+                    <button
+                      onClick={handlePronunciationListen}
+                      disabled={isListening || isGeneratingGame || !!pronunciationResult}
+                      className={cn(
+                        "w-24 h-24 rounded-full flex items-center justify-center transition-all shadow-2xl relative",
+                        isListening ? "bg-red-500 animate-pulse scale-110" : 
+                        pronunciationResult ? "bg-emerald-500 cursor-default" : "bg-purple-600 hover:bg-purple-700"
+                      )}
+                    >
+                      {isListening ? <X className="text-white w-10 h-10" /> : 
+                       pronunciationResult ? <CheckCircle className="text-white w-10 h-10" /> :
+                       <Mic className="text-white w-10 h-10" />}
+                      {isListening && (
+                        <div className="absolute inset-0 border-4 border-white rounded-full animate-ping" />
+                      )}
+                    </button>
+                    <p className="text-purple-700 font-black uppercase tracking-widest">
+                      {isListening ? "Đang lắng nghe..." : 
+                       pronunciationResult ? "Đã ghi nhận!" : "Nhấn để bắt đầu đọc"}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {pronunciationResult && (
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="bg-white p-6 rounded-3xl border-2 border-purple-100 shadow-lg space-y-4"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="text-left">
+                      <p className="text-sm text-purple-500 font-bold uppercase">Kết quả của bạn:</p>
+                      <p className="text-lg text-purple-900 italic">"{pronunciationResult.transcript}"</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-4xl font-black text-purple-600">{pronunciationResult.score}</p>
+                      <p className="text-xs text-purple-400 font-bold">ĐIỂM SỐ</p>
+                    </div>
+                  </div>
+                  <div className="p-4 bg-purple-50 rounded-2xl text-purple-800 font-medium italic">
+                    {pronunciationResult.feedback}
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    {pronunciationStep > 0 && (
+                      <button 
+                        onClick={prevPronunciationStep}
+                        className="bg-purple-100 text-purple-700 py-3 rounded-xl font-bold hover:bg-purple-200 transition-all flex items-center justify-center gap-2"
+                      >
+                        <ChevronLeft size={20} /> QUAY LẠI
+                      </button>
+                    )}
+                    <button 
+                      onClick={nextPronunciationStep}
+                      className={cn(
+                        "py-3 rounded-xl font-bold transition-all flex items-center justify-center gap-2",
+                        pronunciationStep > 0 ? "bg-purple-600 text-white hover:bg-purple-700" : "col-span-2 bg-purple-600 text-white hover:bg-purple-700"
+                      )}
+                    >
+                      {pronunciationStep < 4 ? "CÂU TIẾP THEO" : "XEM TỔNG KẾT"} <ChevronRight size={20} />
+                    </button>
+                  </div>
+                  {pronunciationStep < 4 && (
+                    <button 
+                      onClick={finishPronunciationSession}
+                      className="w-full text-purple-400 text-sm font-bold hover:text-purple-600 transition-colors py-2"
+                    >
+                      HOÀN THÀNH SỚM
+                    </button>
+                  )}
+                </motion.div>
+              )}
             </div>
           ) : (
-            <div className="space-y-6">
-              <div className="bg-purple-50 p-8 rounded-3xl border-2 border-purple-100 space-y-4">
-                <p className="text-purple-900 text-2xl font-bold leading-relaxed">
-                  "{pronunciationSentence}"
-                </p>
-                <button 
-                  onClick={() => speak(pronunciationSentence)}
-                  className="bg-purple-200 text-purple-700 p-3 rounded-full hover:bg-purple-300 transition-all"
-                >
-                  <Volume2 size={24} />
-                </button>
+            <div className="space-y-8">
+              <div className="text-center space-y-4">
+                <Trophy className="w-20 h-20 text-yellow-500 mx-auto" />
+                <h3 className="text-3xl font-black text-purple-900 uppercase">Tổng Kết Luyện Tập</h3>
+                <p className="text-purple-600 font-bold">Cấp độ: {pronunciationDifficulty}</p>
               </div>
 
-              <div className="flex flex-col items-center gap-6">
-                <button
-                  onClick={handlePronunciationListen}
-                  disabled={isListening || isGeneratingGame}
-                  className={cn(
-                    "w-24 h-24 rounded-full flex items-center justify-center transition-all shadow-2xl relative",
-                    isListening ? "bg-red-500 animate-pulse scale-110" : "bg-purple-600 hover:bg-purple-700"
-                  )}
+              <div className="bg-purple-50 p-8 rounded-[40px] border-4 border-purple-100 space-y-6">
+                <div className="grid grid-cols-5 gap-2">
+                  {pronunciationScores.map((score, idx) => (
+                    <div key={idx} className="text-center space-y-1">
+                      <div className="h-24 bg-white rounded-xl relative overflow-hidden flex flex-col justify-end border-2 border-purple-100">
+                        <motion.div 
+                          initial={{ height: 0 }}
+                          animate={{ height: `${score}%` }}
+                          className={cn(
+                            "w-full",
+                            score >= 90 ? "bg-emerald-500" : score >= 70 ? "bg-blue-500" : "bg-orange-500"
+                          )}
+                        />
+                        <span className="absolute inset-0 flex items-center justify-center font-black text-purple-900 text-xs">{score}</span>
+                      </div>
+                      <span className="text-[10px] font-bold text-purple-400 uppercase">Câu {idx + 1}</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="pt-6 border-t border-purple-200 flex justify-between items-center">
+                  <div className="text-left">
+                    <p className="text-sm text-purple-500 font-bold uppercase">Điểm trung bình</p>
+                    <p className="text-4xl font-black text-purple-900">
+                      {Math.round(pronunciationScores.reduce((a, b) => a + b, 0) / pronunciationScores.length)}
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm text-purple-500 font-bold uppercase">Nòng nọc nhận được</p>
+                    <p className="text-4xl font-black text-emerald-600">
+                      +{Math.round(pronunciationScores.reduce((a, b) => a + b, 0) / 2)} 🐸
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex gap-4">
+                <button 
+                  onClick={() => setPronunciationSubViewMode('difficulty-select')}
+                  className="flex-1 bg-purple-100 text-purple-700 py-4 rounded-2xl font-bold hover:bg-purple-200 transition-all"
                 >
-                  {isListening ? <X className="text-white w-10 h-10" /> : <Mic className="text-white w-10 h-10" />}
-                  {isListening && (
-                    <div className="absolute inset-0 border-4 border-white rounded-full animate-ping" />
-                  )}
+                  LUYỆN TẬP LẠI
                 </button>
-                <p className="text-purple-700 font-black uppercase tracking-widest">
-                  {isListening ? "Đang lắng nghe..." : "Nhấn để bắt đầu đọc"}
-                </p>
+                <button 
+                  onClick={() => setEntertainmentSubView('menu')}
+                  className="flex-1 bg-purple-600 text-white py-4 rounded-2xl font-black hover:bg-purple-700 transition-all shadow-lg"
+                >
+                  VỀ THỰC ĐƠN
+                </button>
               </div>
             </div>
-          )}
-
-          {pronunciationResult && (
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="bg-white p-6 rounded-3xl border-2 border-purple-100 shadow-lg space-y-4"
-            >
-              <div className="flex items-center justify-between">
-                <div className="text-left">
-                  <p className="text-sm text-purple-500 font-bold uppercase">Kết quả của bạn:</p>
-                  <p className="text-lg text-purple-900 italic">"{pronunciationResult.transcript}"</p>
-                </div>
-                <div className="text-right">
-                  <p className="text-4xl font-black text-purple-600">{pronunciationResult.score}</p>
-                  <p className="text-xs text-purple-400 font-bold">ĐIỂM SỐ</p>
-                </div>
-              </div>
-              <div className="p-4 bg-purple-50 rounded-2xl text-purple-800 font-medium italic">
-                {pronunciationResult.feedback}
-              </div>
-              <button 
-                onClick={startPronunciation}
-                className="w-full bg-purple-600 text-white py-3 rounded-xl font-bold hover:bg-purple-700 transition-all"
-              >
-                THỬ CÂU KHÁC
-              </button>
-            </motion.div>
           )}
 
           {gameFeedback && (
@@ -1380,15 +1552,12 @@ Cấu trúc JSON yêu cầu:
     setIsTutorThinking(true);
     try {
       const context = getTutorContext();
-      const prompt = `Bạn là Ếch Gia Sư, một trợ lý AI thông minh của app Efrog. 
-Người dùng đang làm bài tập ở phần ${currentView}. 
-Ngữ cảnh hiện tại: ${context}
-Người dùng đã dừng lại ở câu hỏi này hơn 20 giây. Hãy "nhảy" ra chào hỏi một cách hóm hỉnh và đưa ra một gợi ý nhẹ nhàng (HINT) để khích lệ họ tiếp tục, tuyệt đối không cho đáp án.
-Tông giọng: Kiên nhẫn, khích lệ, hóm hỉnh phong cách loài ếch.`;
-
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: prompt
+        model: "gemini-3.1-flash-lite-preview",
+        contents: `Người dùng đang dừng lại ở: ${context}`,
+        config: {
+          systemInstruction: "Bạn là Ếch Gia Sư. Người dùng đã dừng lại hơn 20s. Hãy chào hóm hỉnh và đưa ra 1 gợi ý nhẹ nhàng (HINT) khích lệ họ, không cho đáp án.",
+        }
       });
       const text = response.text || "Quác! Có vẻ câu này hơi 'khoai' một chút nhỉ? Đừng lo, ta ở đây để giúp bạn nhảy qua nó! Bạn cần ta gợi ý gì không?";
       setTutorMessages([{ role: 'tutor', content: text }]);
@@ -1407,25 +1576,12 @@ Tông giọng: Kiên nhẫn, khích lệ, hóm hỉnh phong cách loài ếch.`;
 
     try {
       const context = getTutorContext();
-      const prompt = `Bạn là Ếch Gia Sư, trợ lý AI của Efrog. 
-Nhiệm vụ: Hỗ trợ người dùng làm bài tập mà không cho trực tiếp đáp án.
-Ngữ cảnh: ${context}
-
-Quy tắc:
-1. Không giải hộ: Nếu hỏi đáp án, hãy gợi ý cấu trúc ngữ pháp/từ loại.
-2. Giải thích ngữ cảnh: Nếu người dùng sai, hãy phân tích tại sao.
-3. Gợi mở (Hint): Đưa ra ví dụ tương tự đơn giản hơn.
-4. Tích hợp Sổ tay: Nếu hỏi về từ vựng, giải nghĩa và hỏi xem họ có muốn lưu vào Sổ tay (+5 Nòng nọc) không.
-5. Tông giọng: Kiên nhẫn, khích lệ, hóm hỉnh phong cách loài ếch.
-
-Lịch sử trò chuyện:
-${newMessages.map(m => `${m.role === 'user' ? 'Người dùng' : 'Ếch Gia Sư'}: ${m.content}`).join('\n')}
-
-Câu hỏi mới: ${userMessage}`;
-
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: prompt
+        model: "gemini-3.1-flash-lite-preview",
+        contents: `Ngữ cảnh: ${context}. Câu hỏi: ${userMessage}`,
+        config: {
+          systemInstruction: "Bạn là Ếch Gia Sư. Hỗ trợ người dùng làm bài tập (không cho đáp án trực tiếp). Gợi ý cấu trúc/từ loại, giải thích lỗi sai, gợi mở (Hint). Tông giọng hóm hỉnh.",
+        }
       });
       const text = response.text || "Quác! Ta đang suy nghĩ một chút, bạn đợi ta nhé!";
       setTutorMessages([...newMessages, { role: 'tutor', content: text }]);
@@ -1479,35 +1635,11 @@ Câu hỏi mới: ${userMessage}`;
     }
 
     try {
-      const prompt = `Bạn là chuyên gia biên soạn học liệu của Efrog. Hãy tạo một bộ bài tập trắc nghiệm nối từ vựng (Matching Quiz) gồm 5 câu hỏi dựa trên ${vocabSource}.
-
-Cấu trúc mỗi câu hỏi:
-1. Một từ vựng tiếng Anh (kèm phiên âm IPA).
-2. 4 phương án, mỗi phương án là một bộ định nghĩa theo cấu trúc: [Định nghĩa tiếng Anh] - [Dịch tiếng Việt].
-3. Định nghĩa tiếng Việt phải sát nghĩa và tự nhiên.
-4. Các phương án nhiễu (distractors) phải là định nghĩa của các từ vựng khác cùng chủ đề để tăng độ khó.
-
-Cấu trúc JSON:
-{
-  "questions": [
-    {
-      "word": "string",
-      "phonetic": "string",
-      "options": [
-        { "definition": "string", "translation": "string" },
-        { "definition": "string", "translation": "string" },
-        { "definition": "string", "translation": "string" },
-        { "definition": "string", "translation": "string" }
-      ],
-      "correctAnswer": number (0-3)
-    }
-  ]
-}`;
-
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: prompt,
+        model: "gemini-3.1-flash-lite-preview",
+        contents: `Tạo Matching Quiz dựa trên ${vocabSource}.`,
         config: {
+          systemInstruction: "Bạn là chuyên gia Efrog. Tạo 5 câu hỏi nối từ (word + phonetic vs 4 options [definition - translation]). Trả về JSON.",
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
@@ -1755,28 +1887,11 @@ Cấu trúc JSON:
     }
 
     try {
-      const prompt = `Bạn là "Ếch Trưởng Lão" – Giám khảo tối cao của đầm lầy Efrog. Hãy tạo Câu hỏi số ${step} cho bài Placement Test.
-Trình độ mục tiêu: ${targetLevel}.
-Trọng tâm: ${focus}.
-
-Yêu cầu:
-1. Ngữ cảnh hoàn toàn mới, độc bản, không trùng lặp.
-2. Câu hỏi trắc nghiệm 4 lựa chọn.
-3. Giải thích bằng tiếng Việt hóm hỉnh theo phong cách "ếch".
-
-Cấu trúc JSON:
-{
-  "text": "string (câu hỏi tiếng Anh có chỗ trống)",
-  "options": ["string", "string", "string", "string"],
-  "correctAnswer": number (0-3),
-  "explanation": "string (giải thích tiếng Việt hóm hỉnh)",
-  "level": "${targetLevel}"
-}`;
-
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: prompt,
+        model: "gemini-3.1-flash-lite-preview",
+        contents: `Tạo câu hỏi Placement Test số ${step} (Trình độ: ${targetLevel}, Trọng tâm: ${focus})`,
         config: {
+          systemInstruction: "Bạn là Ếch Trưởng Lão Efrog. Tạo câu hỏi trắc nghiệm 4 lựa chọn, giải thích hóm hỉnh (VN). Trả về JSON.",
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
