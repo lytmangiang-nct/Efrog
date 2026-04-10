@@ -51,9 +51,13 @@ const LessonCard: React.FC<{ lesson: Lesson, onClick: () => void }> = ({ lesson,
     <div className="flex items-center gap-4">
       <div className={cn(
         "w-12 h-12 rounded-xl flex items-center justify-center",
-        lesson.category === 'Grammar' ? "bg-blue-50 text-blue-600" : "bg-purple-50 text-purple-600"
+        lesson.category === 'Grammar' ? "bg-blue-50 text-blue-600" : 
+        lesson.category === 'Vocabulary' ? "bg-purple-50 text-purple-600" :
+        "bg-orange-50 text-orange-600"
       )}>
-        {lesson.category === 'Grammar' ? <BookOpen size={24} /> : <GraduationCap size={24} />}
+        {lesson.category === 'Grammar' ? <BookOpen size={24} /> : 
+         lesson.category === 'Vocabulary' ? <GraduationCap size={24} /> :
+         <Sparkles size={24} />}
       </div>
       <div>
         <h4 className="font-bold text-emerald-900">{lesson.title}</h4>
@@ -502,6 +506,12 @@ export default function App() {
   const [scrambleInput, setScrambleInput] = useState('');
   const [scrambleHint, setScrambleHint] = useState('');
   const [isGeneratingScramble, setIsGeneratingScramble] = useState(false);
+  const [scrambleDifficulty, setScrambleDifficulty] = useState<'Easy' | 'Medium' | 'Hard'>('Easy');
+  const [scrambleSubViewMode, setScrambleSubViewMode] = useState<'difficulty-select' | 'playing' | 'summary'>('difficulty-select');
+  const [scrambleStep, setScrambleStep] = useState(0);
+  const [scrambleQuestions, setScrambleQuestions] = useState<{word: string, meaning: string}[]>([]);
+  const [scrambleCorrectCount, setScrambleCorrectCount] = useState(0);
+  const [isScrambleFinished, setIsScrambleFinished] = useState(false);
   
   // Image Match State
   const [imageMatchDescription, setImageMatchDescription] = useState('');
@@ -531,51 +541,72 @@ export default function App() {
     }
   };
 
-  const startWordScramble = async () => {
+  const startWordScramble = async (difficulty?: 'Easy' | 'Medium' | 'Hard') => {
     if (!user) return;
+    const selectedDiff = difficulty || scrambleDifficulty;
+    setScrambleDifficulty(selectedDiff);
     setIsGeneratingScramble(true);
     setEntertainmentSubView('word-scramble');
+    setScrambleSubViewMode('playing');
     setScrambleInput('');
     setGameFeedback('');
     setScrambleHint('');
+    setScrambleStep(0);
+    setScrambleCorrectCount(0);
+    setIsScrambleFinished(false);
+
+    const questionCount = selectedDiff === 'Easy' ? 5 : selectedDiff === 'Medium' ? 10 : 20;
 
     try {
       const response = await ai.models.generateContent({
         model: "gemini-3.1-flash-lite-preview",
-        contents: `Chọn một từ vựng tiếng Anh trình độ ${user.level} cho trò chơi "Ếch Nhảy Chữ".`,
+        contents: `Tạo bộ câu hỏi ${questionCount} từ vựng tiếng Anh trình độ ${user.level} cho trò chơi "Ếch Nhảy Chữ".`,
         config: {
-          systemInstruction: "Bạn là Quản trò Efrog. Chọn 1 từ (5-10 ký tự) và nghĩa tiếng Việt. Ưu tiên từ hữu ích. Trả về JSON: {word, meaning}",
+          systemInstruction: "Bạn là Quản trò Efrog. Chọn các từ hữu ích (5-10 ký tự) và nghĩa tiếng Việt. Trả về JSON: { questions: [{word, meaning}] }",
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
             properties: {
-              word: { type: Type.STRING },
-              meaning: { type: Type.STRING }
+              questions: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    word: { type: Type.STRING },
+                    meaning: { type: Type.STRING }
+                  },
+                  required: ["word", "meaning"]
+                }
+              }
             },
-            required: ["word", "meaning"]
+            required: ["questions"]
           }
         }
       });
 
       const data = JSON.parse(response.text || '{}');
-      const word = data.word.trim();
-      setOriginalWord(word);
-      setScrambleHint(data.meaning);
+      const questions = data.questions || [];
+      setScrambleQuestions(questions);
       
-      // Ensure scrambled word is actually different
-      let scrambled = word;
-      while (scrambled === word && word.length > 1) {
-        scrambled = word.split('').sort(() => Math.random() - 0.5).join('');
+      if (questions.length > 0) {
+        const firstWord = questions[0].word.trim();
+        setOriginalWord(firstWord);
+        setScrambleHint(questions[0].meaning);
+        
+        let scrambled = firstWord;
+        while (scrambled === firstWord && firstWord.length > 1) {
+          scrambled = firstWord.split('').sort(() => Math.random() - 0.5).join('');
+        }
+        setScrambledWord(scrambled);
       }
-      setScrambledWord(scrambled);
     } catch (error) {
       console.error("Error starting word scramble:", error);
-      // Fallback to notebook if AI fails
-      if (user.notebook && user.notebook.length > 0) {
-        const randomNote = user.notebook[Math.floor(Math.random() * user.notebook.length)];
-        setOriginalWord(randomNote.word);
-        setScrambledWord(randomNote.word.split('').sort(() => Math.random() - 0.5).join(''));
-      }
+      // Fallback
+      const fallbackWord = "FROG";
+      setOriginalWord(fallbackWord);
+      setScrambleHint("Con ếch");
+      setScrambledWord("GORF");
+      setScrambleQuestions([{word: "FROG", meaning: "Con ếch"}]);
     } finally {
       setIsGeneratingScramble(false);
     }
@@ -651,6 +682,8 @@ export default function App() {
     setPronunciationStep(0);
     setPronunciationScores([]);
 
+    const questionCount = selectedDiff === 'Easy' ? 5 : selectedDiff === 'Medium' ? 10 : 20;
+
     try {
       const difficultyPrompt = {
         'Easy': 'very short, basic A1 vocabulary, 3-5 words',
@@ -660,9 +693,9 @@ export default function App() {
 
       const response = await ai.models.generateContent({
         model: "gemini-3.1-flash-lite-preview",
-        contents: `Generate 5 ${selectedDiff} pronunciation sentences.`,
+        contents: `Generate ${questionCount} ${selectedDiff} pronunciation sentences.`,
         config: {
-          systemInstruction: `You are Efrog Coach. Generate 5 English sentences (${difficultyPrompt}) with main word details in JSON. Keep it extremely simple for Easy level.`,
+          systemInstruction: `You are Efrog Coach. Generate ${questionCount} English sentences (${difficultyPrompt}) with main word details in JSON. Keep it extremely simple for Easy level.`,
           responseMimeType: "application/json",
           thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
           responseSchema: {
@@ -735,12 +768,45 @@ export default function App() {
 
   const handleScrambleSubmit = () => {
     if (scrambleInput.toLowerCase() === originalWord.toLowerCase()) {
-      setGameFeedback("Chính xác! Bạn đã nhận được 10 Nòng nọc! 🐸✨");
-      const updatedUser = { ...user!, tadpoles: user!.tadpoles + 10 };
-      setUser(updatedUser);
-      localStorage.setItem('efrog_user', JSON.stringify(updatedUser));
+      setGameFeedback("Chính xác! Bạn lướt trên mặt nước thật điêu luyện. Quác! 🐸✨");
+      setScrambleCorrectCount(prev => prev + 1);
     } else {
-      setGameFeedback("Chưa đúng rồi, hãy thử lại nhé!");
+      setGameFeedback(`Chưa đúng rồi! Đáp án đúng là: ${originalWord.toUpperCase()}`);
+    }
+
+    if (scrambleStep === scrambleQuestions.length - 1) {
+      setIsScrambleFinished(true);
+      
+      // Calculate final score and reward
+      const finalCorrectCount = scrambleInput.toLowerCase() === originalWord.toLowerCase() ? scrambleCorrectCount + 1 : scrambleCorrectCount;
+      const questionCount = scrambleQuestions.length;
+      const reward = Math.round((finalCorrectCount / questionCount) * (questionCount === 5 ? 50 : questionCount === 10 ? 100 : 200));
+
+      if (user && reward > 0) {
+        const updatedUser = { ...user, tadpoles: user.tadpoles + reward };
+        setUser(updatedUser);
+        localStorage.setItem('efrog_user', JSON.stringify(updatedUser));
+      }
+    }
+  };
+
+  const nextScrambleStep = () => {
+    const nextStep = scrambleStep + 1;
+    if (nextStep < scrambleQuestions.length) {
+      setScrambleStep(nextStep);
+      setGameFeedback('');
+      setScrambleInput('');
+      const nextQ = scrambleQuestions[nextStep];
+      setOriginalWord(nextQ.word);
+      setScrambleHint(nextQ.meaning);
+      
+      let scrambled = nextQ.word;
+      while (scrambled === nextQ.word && nextQ.word.length > 1) {
+        scrambled = nextQ.word.split('').sort(() => Math.random() - 0.5).join('');
+      }
+      setScrambledWord(scrambled);
+    } else {
+      setScrambleSubViewMode('summary');
     }
   };
 
@@ -992,7 +1058,10 @@ export default function App() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           <motion.button
             whileHover={{ scale: 1.05, y: -5 }}
-            onClick={startWordScramble}
+            onClick={() => {
+              setScrambleSubViewMode('difficulty-select');
+              setEntertainmentSubView('word-scramble');
+            }}
             className="bg-white p-8 rounded-[40px] border-4 border-emerald-100 shadow-xl text-center space-y-4 group"
           >
             <div className="w-20 h-20 bg-emerald-100 rounded-full flex items-center justify-center mx-auto group-hover:bg-emerald-200 transition-colors">
@@ -1000,9 +1069,9 @@ export default function App() {
             </div>
             <div className="space-y-2">
               <h3 className="text-xl font-black text-emerald-900">Ếch Nhảy Chữ</h3>
-              <p className="text-sm text-emerald-600">Sắp xếp lại các chữ cái từ Sổ tay của bạn!</p>
+              <p className="text-sm text-emerald-600">Sắp xếp lại các chữ cái để tìm từ đúng!</p>
             </div>
-            <div className="bg-emerald-50 py-2 rounded-xl text-emerald-700 font-bold text-sm">Thưởng: 10 Nòng nọc</div>
+            <div className="bg-emerald-50 py-2 rounded-xl text-emerald-700 font-bold text-sm">Thưởng: Lên tới 200 Nòng nọc</div>
           </motion.button>
 
           <motion.button
@@ -1037,7 +1106,10 @@ export default function App() {
 
           <motion.button
             whileHover={{ scale: 1.05, y: -5 }}
-            onClick={() => generateMatchingQuiz()}
+            onClick={() => {
+              setMatchingQuizSubViewMode('difficulty-select');
+              setCurrentView('matching-quiz');
+            }}
             className="bg-white p-8 rounded-[40px] border-4 border-yellow-100 shadow-xl text-center space-y-4 group"
           >
             <div className="w-20 h-20 bg-yellow-100 rounded-full flex items-center justify-center mx-auto group-hover:bg-yellow-200 transition-colors">
@@ -1047,7 +1119,7 @@ export default function App() {
               <h3 className="text-xl font-black text-yellow-900">Thử Thách Nối Từ</h3>
               <p className="text-sm text-yellow-600">Nối từ vựng với định nghĩa song ngữ!</p>
             </div>
-            <div className="bg-yellow-50 py-2 rounded-xl text-yellow-700 font-bold text-sm">Thưởng: Lên tới 50 Nòng nọc</div>
+            <div className="bg-yellow-50 py-2 rounded-xl text-yellow-700 font-bold text-sm">Thưởng: Lên tới 200 Nòng nọc</div>
           </motion.button>
 
           <motion.button
@@ -1068,78 +1140,174 @@ export default function App() {
       )}
 
       {entertainmentSubView === 'word-scramble' && (
-        <section className="bg-white p-12 rounded-[40px] border-4 border-emerald-100 shadow-2xl text-center space-y-8">
-          <div className="space-y-2">
-            <h3 className="text-3xl font-black text-emerald-900 uppercase tracking-tighter">Ếch Nhảy Chữ</h3>
-            <p className="text-emerald-600 font-medium">Hãy sắp xếp lại các chữ cái sau thành từ đúng:</p>
-          </div>
+        <section className="bg-white p-6 md:p-12 rounded-[40px] border-4 border-emerald-100 shadow-2xl text-center space-y-8">
+          {scrambleSubViewMode === 'difficulty-select' ? (
+            <div className="space-y-8 py-8">
+              <div className="space-y-4">
+                <div className="w-24 h-24 bg-emerald-100 rounded-[32px] flex items-center justify-center mx-auto">
+                  <Dices className="w-12 h-12 text-emerald-600" />
+                </div>
+                <h3 className="text-3xl font-black text-emerald-900 uppercase tracking-tighter">Ếch Nhảy Chữ</h3>
+                <p className="text-emerald-600 font-medium max-w-sm mx-auto">Chọn cấp độ thử thách để bắt đầu cuộc phiêu lưu sắp xếp chữ cái!</p>
+              </div>
 
-          {isGeneratingScramble ? (
-            <div className="py-12 flex flex-col items-center gap-4">
-              <div className="w-12 h-12 border-4 border-emerald-600 border-t-transparent rounded-full animate-spin" />
-              <p className="text-emerald-700 font-bold animate-pulse">Ếch đang xáo trộn chữ cái...</p>
+              <div className="grid grid-cols-1 gap-4 max-w-md mx-auto">
+                {[
+                  { id: 'Easy', label: 'DỄ', questions: 5, reward: 50, color: 'bg-emerald-50 text-emerald-700 border-emerald-100' },
+                  { id: 'Medium', label: 'TRUNG BÌNH', questions: 10, reward: 100, color: 'bg-yellow-50 text-yellow-700 border-yellow-100' },
+                  { id: 'Hard', label: 'KHÓ', questions: 20, reward: 200, color: 'bg-red-50 text-red-700 border-red-100' }
+                ].map((level) => (
+                  <button
+                    key={level.id}
+                    onClick={() => startWordScramble(level.id as any)}
+                    className={cn(
+                      "group p-6 rounded-3xl border-2 transition-all hover:scale-[1.02] active:scale-[0.98] text-left flex items-center justify-between",
+                      level.color
+                    )}
+                  >
+                    <div>
+                      <p className="font-black text-xl">{level.label}</p>
+                      <p className="text-sm opacity-80">{level.questions} câu hỏi • Thưởng tới {level.reward} 🐸</p>
+                    </div>
+                    <ChevronRight className="w-6 h-6 opacity-0 group-hover:opacity-100 transition-all" />
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : scrambleSubViewMode === 'summary' ? (
+            <div className="space-y-8 py-8">
+              <div className="space-y-4">
+                <Trophy className="w-20 h-20 text-yellow-500 mx-auto" />
+                <h3 className="text-3xl font-black text-emerald-900 uppercase tracking-tighter">Kết Quả Thử Thách</h3>
+                <p className="text-emerald-600 font-bold">Cấp độ: {scrambleDifficulty}</p>
+              </div>
+
+              <div className="bg-emerald-50 p-8 rounded-[40px] border-4 border-emerald-100 space-y-6 max-w-md mx-auto">
+                <div className="flex justify-around items-center">
+                  <div className="text-center">
+                    <p className="text-sm text-emerald-500 font-bold uppercase tracking-widest">Chính xác</p>
+                    <p className="text-5xl font-black text-emerald-900">{scrambleCorrectCount}/{scrambleQuestions.length}</p>
+                  </div>
+                  <div className="w-px h-16 bg-emerald-200" />
+                  <div className="text-center">
+                    <p className="text-sm text-emerald-500 font-bold uppercase tracking-widest">Nòng nọc</p>
+                    <p className="text-5xl font-black text-emerald-600">
+                      +{Math.round((scrambleCorrectCount / scrambleQuestions.length) * (scrambleQuestions.length === 5 ? 50 : scrambleQuestions.length === 10 ? 100 : 200))} 🐸
+                    </p>
+                  </div>
+                </div>
+                
+                <div className="pt-6 border-t border-emerald-200">
+                  <FrogMascot className="w-32 h-32 mx-auto" mood={scrambleCorrectCount === scrambleQuestions.length ? 'cheering' : 'happy'} level={user?.level} />
+                  <p className="text-emerald-700 italic font-medium mt-4">
+                    {scrambleCorrectCount === scrambleQuestions.length ? "Tuyệt vời! Bạn là bậc thầy sắp xếp chữ cái!" : 
+                     scrambleCorrectCount > scrambleQuestions.length / 2 ? "Khá lắm! Bạn đang tiến bộ rất nhanh đấy!" : 
+                     "Đừng nản chí! Hãy luyện tập thêm để nhảy xa hơn nhé!"}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex gap-4 max-w-md mx-auto">
+                <button 
+                  onClick={() => setScrambleSubViewMode('difficulty-select')}
+                  className="flex-1 bg-emerald-100 text-emerald-700 py-4 rounded-2xl font-bold hover:bg-emerald-200 transition-all"
+                >
+                  THỬ LẠI
+                </button>
+                <button 
+                  onClick={() => setEntertainmentSubView('menu')}
+                  className="flex-1 bg-emerald-600 text-white py-4 rounded-2xl font-black hover:bg-emerald-700 transition-all shadow-lg"
+                >
+                  VỀ MENU
+                </button>
+              </div>
             </div>
           ) : (
             <>
-              <div className="flex justify-center gap-2 flex-wrap">
-                {scrambledWord.split('').map((char, i) => (
-                  <motion.div
-                    key={`${originalWord}-${i}`}
-                    initial={{ y: 20, opacity: 0 }}
-                    animate={{ y: 0, opacity: 1 }}
-                    transition={{ delay: i * 0.05 }}
-                    className="w-12 h-12 bg-emerald-500 text-white rounded-xl flex items-center justify-center text-2xl font-black shadow-lg"
-                  >
-                    {char.toUpperCase()}
-                  </motion.div>
-                ))}
+              <div className="flex items-center justify-between mb-4">
+                <div className="bg-emerald-100 px-4 py-2 rounded-full text-emerald-700 font-bold text-sm">
+                  Câu {scrambleStep + 1} / {scrambleQuestions.length}
+                </div>
+                <div className="flex items-center gap-1 text-emerald-600 font-bold">
+                  <Trophy size={16} />
+                  <span>{scrambleCorrectCount}</span>
+                </div>
               </div>
 
-              {scrambleHint && (
-                <div className="bg-emerald-50 p-4 rounded-2xl border-2 border-emerald-100 inline-block mx-auto">
-                  <p className="text-emerald-700 text-sm font-bold">Gợi ý: <span className="italic font-medium">{scrambleHint}</span></p>
+              <div className="space-y-2">
+                <h3 className="text-3xl font-black text-emerald-900 uppercase tracking-tighter">Ếch Nhảy Chữ</h3>
+                <p className="text-emerald-600 font-medium">Hãy sắp xếp lại các chữ cái sau thành từ đúng:</p>
+              </div>
+
+              {isGeneratingScramble ? (
+                <div className="py-12 flex flex-col items-center gap-4">
+                  <div className="w-12 h-12 border-4 border-emerald-600 border-t-transparent rounded-full animate-spin" />
+                  <p className="text-emerald-700 font-bold animate-pulse">Ếch đang xáo trộn chữ cái...</p>
                 </div>
+              ) : (
+                <>
+                  <div className="flex justify-center gap-2 flex-wrap">
+                    {scrambledWord.split('').map((char, i) => (
+                      <motion.div
+                        key={`${originalWord}-${i}`}
+                        initial={{ y: 20, opacity: 0 }}
+                        animate={{ y: 0, opacity: 1 }}
+                        transition={{ delay: i * 0.05 }}
+                        className="w-12 h-12 bg-emerald-500 text-white rounded-xl flex items-center justify-center text-2xl font-black shadow-lg"
+                      >
+                        {char.toUpperCase()}
+                      </motion.div>
+                    ))}
+                  </div>
+
+                  {scrambleHint && (
+                    <div className="bg-emerald-50 p-4 rounded-2xl border-2 border-emerald-100 inline-block mx-auto">
+                      <p className="text-emerald-700 text-sm font-bold">Gợi ý: <span className="italic font-medium">{scrambleHint}</span></p>
+                    </div>
+                  )}
+
+                  <div className="max-w-md mx-auto space-y-4">
+                    <input
+                      type="text"
+                      value={scrambleInput}
+                      onChange={(e) => setScrambleInput(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && !gameFeedback && handleScrambleSubmit()}
+                      placeholder="Nhập từ của bạn..."
+                      disabled={!!gameFeedback}
+                      className="w-full bg-emerald-50 border-2 border-emerald-200 rounded-2xl py-4 px-6 text-center text-2xl font-bold text-emerald-900 outline-none focus:border-emerald-500 transition-all disabled:opacity-50"
+                    />
+                    
+                    {gameFeedback ? (
+                      <div className="space-y-4">
+                        <motion.div
+                          initial={{ scale: 0.9, opacity: 0 }}
+                          animate={{ scale: 1, opacity: 1 }}
+                          className={cn(
+                            "p-4 rounded-2xl font-bold text-lg",
+                            gameFeedback.includes('Chính xác') ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-700"
+                          )}
+                        >
+                          {gameFeedback}
+                        </motion.div>
+                        <button
+                          onClick={nextScrambleStep}
+                          className="w-full bg-emerald-600 text-white py-4 rounded-2xl font-black text-xl hover:bg-emerald-700 transition-all shadow-lg flex items-center justify-center gap-2"
+                        >
+                          {scrambleStep === scrambleQuestions.length - 1 ? "XEM KẾT QUẢ" : "CÂU TIẾP THEO"} <ChevronRight />
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={handleScrambleSubmit}
+                        className="w-full bg-emerald-600 text-white py-4 rounded-2xl font-black text-xl hover:bg-emerald-700 transition-all shadow-lg"
+                      >
+                        KIỂM TRA
+                      </button>
+                    )}
+                  </div>
+                </>
               )}
-
-              <div className="max-w-md mx-auto space-y-4">
-                <input
-                  type="text"
-                  value={scrambleInput}
-                  onChange={(e) => setScrambleInput(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleScrambleSubmit()}
-                  placeholder="Nhập từ của bạn..."
-                  className="w-full bg-emerald-50 border-2 border-emerald-200 rounded-2xl py-4 px-6 text-center text-2xl font-bold text-emerald-900 outline-none focus:border-emerald-500 transition-all"
-                />
-                <div className="flex gap-4">
-                  <button
-                    onClick={startWordScramble}
-                    disabled={isGeneratingScramble}
-                    className="flex-1 bg-emerald-100 text-emerald-700 py-4 rounded-2xl font-bold hover:bg-emerald-200 transition-all disabled:opacity-50"
-                  >
-                    ĐỔI TỪ KHÁC
-                  </button>
-                  <button
-                    onClick={handleScrambleSubmit}
-                    className="flex-[2] bg-emerald-600 text-white py-4 rounded-2xl font-black text-xl hover:bg-emerald-700 transition-all shadow-lg"
-                  >
-                    KIỂM TRA
-                  </button>
-                </div>
-              </div>
             </>
-          )}
-
-          {gameFeedback && (
-            <motion.p
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className={cn(
-                "text-lg font-bold p-4 rounded-2xl",
-                gameFeedback.includes('Chính xác') ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"
-              )}
-            >
-              {gameFeedback}
-            </motion.p>
           )}
         </section>
       )}
@@ -1295,13 +1463,13 @@ export default function App() {
                     </button>
                     <h3 className="text-xl font-black text-purple-900 uppercase tracking-tighter">Tiếng Ếch Ộp - {pronunciationDifficulty}</h3>
                   </div>
-                  <span className="bg-purple-100 text-purple-700 px-4 py-1 rounded-full font-bold">Câu {pronunciationStep + 1}/5</span>
+                  <span className="bg-purple-100 text-purple-700 px-4 py-1 rounded-full font-bold">Câu {pronunciationStep + 1}/{pronunciationSessionQuestions.length}</span>
                 </div>
                 <div className="w-full h-2 bg-purple-50 rounded-full overflow-hidden">
                   <motion.div 
                     className="h-full bg-purple-500"
                     initial={{ width: 0 }}
-                    animate={{ width: `${((pronunciationStep + 1) / 5) * 100}%` }}
+                    animate={{ width: `${((pronunciationStep + 1) / pronunciationSessionQuestions.length) * 100}%` }}
                   />
                 </div>
               </div>
@@ -1514,8 +1682,11 @@ export default function App() {
   const [matchingQuizFeedback, setMatchingQuizFeedback] = useState<string | null>(null);
   const [isMatchingQuizFinished, setIsMatchingQuizFinished] = useState(false);
   const [isGeneratingMatchingQuiz, setIsGeneratingMatchingQuiz] = useState(false);
+  const [matchingQuizDifficulty, setMatchingQuizDifficulty] = useState<'Easy' | 'Medium' | 'Hard'>('Easy');
+  const [matchingQuizSubViewMode, setMatchingQuizSubViewMode] = useState<'difficulty-select' | 'playing' | 'summary'>('difficulty-select');
 
   // Frog Tutor State
+  const [selectedGrade, setSelectedGrade] = useState<10 | 11 | 12 | null>(null);
   const [tutorMessages, setTutorMessages] = useState<TutorMessage[]>([]);
   const [isTutorOpen, setIsTutorOpen] = useState(false);
   const [isTutorThinking, setIsTutorThinking] = useState(false);
@@ -1556,7 +1727,7 @@ export default function App() {
         model: "gemini-3.1-flash-lite-preview",
         contents: `Người dùng đang dừng lại ở: ${context}`,
         config: {
-          systemInstruction: "Bạn là Ếch Gia Sư. Người dùng đã dừng lại hơn 20s. Hãy chào hóm hỉnh và đưa ra 1 gợi ý nhẹ nhàng (HINT) khích lệ họ, không cho đáp án.",
+          systemInstruction: "Bạn là AI trợ giảng Tiếng Anh (Ếch Gia Sư) dành cho học sinh THPT. Người dùng đã dừng lại hơn 20s. Hãy chào hóm hỉnh bằng tiếng Việt và đưa ra 1 gợi ý nhẹ nhàng (HINT) khích lệ họ tiếp tục bài học/bài tập, không cho đáp án trực tiếp.",
         }
       });
       const text = response.text || "Quác! Có vẻ câu này hơi 'khoai' một chút nhỉ? Đừng lo, ta ở đây để giúp bạn nhảy qua nó! Bạn cần ta gợi ý gì không?";
@@ -1580,7 +1751,37 @@ export default function App() {
         model: "gemini-3.1-flash-lite-preview",
         contents: `Ngữ cảnh: ${context}. Câu hỏi: ${userMessage}`,
         config: {
-          systemInstruction: "Bạn là Ếch Gia Sư. Hỗ trợ người dùng làm bài tập (không cho đáp án trực tiếp). Gợi ý cấu trúc/từ loại, giải thích lỗi sai, gợi mở (Hint). Tông giọng hóm hỉnh.",
+          systemInstruction: `Bạn là AI tạo nội dung bài học Tiếng Anh cho học sinh THPT (lớp 10–12) theo SGK Kết nối tri thức (KNTT) của Việt Nam.
+
+🎯 NHIỆM VỤ:
+Tạo nội dung bài học theo đúng cấu trúc UI dạng "card học tập" (ngắn gọn, dễ hiểu, trực quan).
+
+📌 YÊU CẦU ĐỊNH DẠNG BẮT BUỘC:
+
+1. 🟩 TIÊU ĐỀ:
+- Viết dạng: [Tên tiếng Việt] (Tên tiếng Anh)
+- Ví dụ: 🟩 Thì hiện tại đơn (Present Simple)
+
+2. 🟩 MÔ TẢ NGẮN:
+- 1 câu duy nhất giải thích mục đích sử dụng cực dễ hiểu.
+
+3. 🟩 KIẾN THỨC CHI TIẾT:
+- Tạo từ 4 đến 6 block.
+- Mỗi block gồm: Số thứ tự (1, 2, 3…), Tiêu đề ngắn (1–3 từ), Nội dung chỉ 1 dòng (công thức hoặc quy tắc).
+- Viết cực ngắn gọn, dễ hiển thị trên mobile.
+
+4. 🟩 VÍ DỤ MINH HỌA:
+- Tạo 2–3 ví dụ.
+- Format: "Câu tiếng Anh" -> Giải thích tiếng Việt (bắt đầu bằng "→").
+
+5. 🟩 NÚT HÀNH ĐỘNG (CTA):
+- Luôn thêm dòng cuối: 🔥 KHỞI ĐỘNG TRƯỚC KHI NHẢY (WARM-UP)
+
+📌 QUY TẮC QUAN TRỌNG:
+- Nội dung ngắn gọn, rõ ràng, không viết đoạn văn dài.
+- Phù hợp học sinh THPT, ưu tiên dễ hiểu hơn học thuật.
+- Nếu học sinh hỏi ngoài lề, hãy trả lời ngắn gọn rồi dẫn dắt về bài học.
+- Luôn giữ persona thân thiện, khích lệ (Ếch Gia Sư).`,
         }
       });
       const text = response.text || "Quác! Ta đang suy nghĩ một chút, bạn đợi ta nhé!";
@@ -1617,13 +1818,18 @@ export default function App() {
     }
   }, []);
 
-  const generateMatchingQuiz = async (topic?: string) => {
+  const generateMatchingQuiz = async (difficulty?: 'Easy' | 'Medium' | 'Hard', topic?: string) => {
+    const selectedDiff = difficulty || matchingQuizDifficulty;
+    setMatchingQuizDifficulty(selectedDiff);
     setIsGeneratingMatchingQuiz(true);
     setCurrentView('matching-quiz');
+    setMatchingQuizSubViewMode('playing');
     setMatchingQuizStep(0);
     setMatchingQuizAnswers([]);
     setMatchingQuizFeedback(null);
     setIsMatchingQuizFinished(false);
+
+    const questionCount = selectedDiff === 'Easy' ? 5 : selectedDiff === 'Medium' ? 10 : 20;
 
     let vocabSource = "";
     if (topic) {
@@ -1639,7 +1845,7 @@ export default function App() {
         model: "gemini-3.1-flash-lite-preview",
         contents: `Tạo Matching Quiz dựa trên ${vocabSource}.`,
         config: {
-          systemInstruction: "Bạn là chuyên gia Efrog. Tạo 5 câu hỏi nối từ (word + phonetic vs 4 options [definition - translation]). Trả về JSON.",
+          systemInstruction: `Bạn là chuyên gia Efrog. Tạo ${questionCount} câu hỏi nối từ (word + phonetic vs 4 options [definition - translation]). Trả về JSON.`,
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
@@ -1715,12 +1921,8 @@ export default function App() {
       
       // Calculate final score and reward
       const correctCount = newAnswers.filter((ans, idx) => ans === matchingQuizQuestions[idx].correctAnswer).length;
-      let reward = 0;
-      if (correctCount === matchingQuizQuestions.length) {
-        reward = 50;
-      } else if (correctCount > 0) {
-        reward = 20;
-      }
+      const questionCount = matchingQuizQuestions.length;
+      const reward = Math.round((correctCount / questionCount) * (questionCount === 5 ? 50 : questionCount === 10 ? 100 : 200));
 
       if (user && reward > 0) {
         const updatedUser = { ...user, tadpoles: user.tadpoles + reward };
@@ -1731,6 +1933,113 @@ export default function App() {
   };
 
   const renderMatchingQuiz = () => {
+    if (matchingQuizSubViewMode === 'difficulty-select') {
+      return (
+        <div className="min-h-[80vh] flex items-center justify-center p-4">
+          <motion.div 
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="bg-white p-12 rounded-[40px] border-4 border-yellow-100 shadow-2xl text-center space-y-8 max-w-2xl w-full"
+          >
+            <div className="space-y-4">
+              <div className="w-24 h-24 bg-yellow-100 rounded-full flex items-center justify-center mx-auto">
+                <Gamepad2 className="text-yellow-600 w-12 h-12" />
+              </div>
+              <h3 className="text-3xl font-black text-yellow-900 uppercase tracking-tighter">Thử Thách Nối Từ</h3>
+              <p className="text-yellow-600 font-medium text-lg">Chọn cấp độ để bắt đầu thử thách nào!</p>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {(['Easy', 'Medium', 'Hard'] as const).map((diff) => (
+                <motion.button
+                  key={diff}
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={() => generateMatchingQuiz(diff)}
+                  className={cn(
+                    "p-8 rounded-3xl border-4 font-black text-xl transition-all flex flex-col items-center gap-2",
+                    diff === 'Easy' ? "bg-emerald-50 border-emerald-100 text-emerald-700 hover:border-emerald-500" :
+                    diff === 'Medium' ? "bg-blue-50 border-blue-100 text-blue-700 hover:border-blue-500" :
+                    "bg-red-50 border-red-100 text-red-700 hover:border-red-500"
+                  )}
+                >
+                  {diff}
+                  <span className="text-xs font-bold opacity-60">
+                    {diff === 'Easy' ? '5 Câu' : diff === 'Medium' ? '10 Câu' : '20 Câu'}
+                  </span>
+                </motion.button>
+              ))}
+            </div>
+            <button 
+              onClick={() => setCurrentView('entertainment-hub')}
+              className="text-yellow-600 font-bold hover:underline"
+            >
+              Quay lại Đầm Lầy
+            </button>
+          </motion.div>
+        </div>
+      );
+    }
+
+    if (matchingQuizSubViewMode === 'summary') {
+      const correctCount = matchingQuizAnswers.filter((ans, idx) => ans === matchingQuizQuestions[idx].correctAnswer).length;
+      const questionCount = matchingQuizQuestions.length;
+      const reward = Math.round((correctCount / questionCount) * (questionCount === 5 ? 50 : questionCount === 10 ? 100 : 200));
+
+      return (
+        <div className="min-h-[80vh] flex items-center justify-center p-4">
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-white p-12 rounded-[40px] border-4 border-yellow-100 shadow-2xl text-center space-y-8 max-w-2xl w-full"
+          >
+            <div className="space-y-4">
+              <Trophy className="w-20 h-20 text-yellow-500 mx-auto" />
+              <h3 className="text-3xl font-black text-yellow-900 uppercase tracking-tighter">Tổng Kết Thử Thách</h3>
+              <p className="text-yellow-600 font-bold">Cấp độ: {matchingQuizDifficulty}</p>
+            </div>
+
+            <div className="bg-yellow-50 p-8 rounded-[40px] border-4 border-yellow-100 space-y-6">
+              <div className="flex justify-around items-center">
+                <div className="text-center">
+                  <p className="text-sm text-yellow-500 font-bold uppercase tracking-widest">Chính xác</p>
+                  <p className="text-5xl font-black text-yellow-900">{correctCount}/{questionCount}</p>
+                </div>
+                <div className="w-px h-16 bg-yellow-200" />
+                <div className="text-center">
+                  <p className="text-sm text-yellow-500 font-bold uppercase tracking-widest">Nòng nọc</p>
+                  <p className="text-5xl font-black text-emerald-600">+{reward} 🐸</p>
+                </div>
+              </div>
+              
+              <div className="pt-6 border-t border-yellow-200">
+                <FrogMascot className="w-32 h-32 mx-auto" mood={correctCount === questionCount ? 'cheering' : 'happy'} level={user?.level} />
+                <p className="text-yellow-700 italic font-medium mt-4">
+                  {correctCount === questionCount ? "Tuyệt vời! Bạn là bậc thầy nối từ của đầm lầy!" : 
+                   correctCount > questionCount / 2 ? "Khá lắm! Bạn đang tiến bộ rất nhanh đấy!" : 
+                   "Đừng nản chí! Hãy luyện tập thêm để nhảy xa hơn nhé!"}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex gap-4">
+              <button 
+                onClick={() => setMatchingQuizSubViewMode('difficulty-select')}
+                className="flex-1 bg-yellow-100 text-yellow-700 py-4 rounded-2xl font-bold hover:bg-yellow-200 transition-all"
+              >
+                THỬ LẠI
+              </button>
+              <button 
+                onClick={() => setCurrentView('entertainment-hub')}
+                className="flex-1 bg-emerald-600 text-white py-4 rounded-2xl font-black hover:bg-emerald-700 transition-all shadow-lg"
+              >
+                VỀ ĐẦM LẦY
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      );
+    }
+
     if (isGeneratingMatchingQuiz) {
       return (
         <div className="min-h-[80vh] flex flex-col items-center justify-center space-y-6">
@@ -1829,25 +2138,11 @@ export default function App() {
 
               {isMatchingQuizFinished ? (
                 <div className="space-y-6">
-                  <div className="bg-yellow-50 p-8 rounded-[40px] border-4 border-yellow-200 space-y-4">
-                    <FrogMascot className="w-32 h-32 mx-auto" mood={correctCount === matchingQuizQuestions.length ? 'cheering' : 'happy'} level={user?.level} />
-                    <h3 className="text-2xl font-black text-yellow-900">KẾT QUẢ THỬ THÁCH</h3>
-                    <div className="flex justify-center gap-8">
-                      <div className="text-center">
-                        <p className="text-3xl font-black text-yellow-900">{correctCount}/{matchingQuizQuestions.length}</p>
-                        <p className="text-xs font-bold text-yellow-600 uppercase tracking-widest">Chính xác</p>
-                      </div>
-                      <div className="text-center">
-                        <p className="text-3xl font-black text-emerald-600">+{correctCount === matchingQuizQuestions.length ? 50 : correctCount > 0 ? 20 : 0}</p>
-                        <p className="text-xs font-bold text-emerald-500 uppercase tracking-widest">Nòng nọc</p>
-                      </div>
-                    </div>
-                  </div>
                   <button 
-                    onClick={() => setCurrentView('entertainment-hub')}
+                    onClick={() => setMatchingQuizSubViewMode('summary')}
                     className="w-full bg-emerald-600 text-white py-5 rounded-2xl font-black text-xl hover:bg-emerald-700 shadow-xl transition-all"
                   >
-                    HOÀN THÀNH
+                    XEM KẾT QUẢ
                   </button>
                 </div>
               ) : (
@@ -2537,9 +2832,15 @@ Return JSON:
   };
 
   const renderLessons = () => {
-    const filteredLessons = lessons.filter(l => l.level === user?.level);
+    const filteredLessons = lessons.filter(l => {
+      if (selectedGrade) {
+        return l.grade === selectedGrade;
+      }
+      return l.level === user?.level;
+    });
     const grammarLessons = filteredLessons.filter(l => l.category === 'Grammar');
     const vocabLessons = filteredLessons.filter(l => l.category === 'Vocabulary');
+    const skillLessons = filteredLessons.filter(l => l.category === 'Skills');
 
     const handleLessonClick = (lesson: any) => {
       setSelectedLesson(lesson);
@@ -2548,14 +2849,50 @@ Return JSON:
 
     return (
       <div className="space-y-8">
-        <div className="flex items-center gap-4 mb-6">
-          <button onClick={() => setCurrentView('home')} className="p-2 hover:bg-emerald-50 rounded-full">
-            <ArrowLeft className="w-6 h-6 text-emerald-700" />
-          </button>
-          <h2 className="text-2xl font-bold text-emerald-900">Bài học trình độ {user?.level}</h2>
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+          <div className="flex items-center gap-4">
+            <button onClick={() => setCurrentView('home')} className="p-2 hover:bg-emerald-50 rounded-full">
+              <ArrowLeft className="w-6 h-6 text-emerald-700" />
+            </button>
+            <h2 className="text-2xl font-bold text-emerald-900">Bài học {selectedGrade ? `Lớp ${selectedGrade}` : `trình độ ${user?.level}`}</h2>
+          </div>
+          
+          <div className="flex gap-2">
+            {[10, 11, 12].map((grade) => (
+              <button
+                key={grade}
+                onClick={() => setSelectedGrade(selectedGrade === grade ? null : grade as any)}
+                className={cn(
+                  "px-4 py-2 rounded-xl font-bold transition-all border-2",
+                  selectedGrade === grade 
+                    ? "bg-emerald-600 border-emerald-600 text-white shadow-md" 
+                    : "bg-white border-emerald-100 text-emerald-600 hover:border-emerald-300"
+                )}
+              >
+                Lớp {grade}
+              </button>
+            ))}
+          </div>
         </div>
 
-        <div className="space-y-6">
+        <div className="space-y-10">
+          {skillLessons.length > 0 && (
+            <div>
+              <h3 className="text-lg font-black text-emerald-800 mb-4 flex items-center gap-2">
+                <Sparkles className="text-orange-500" size={20} /> KỸ NĂNG (SKILLS)
+              </h3>
+              <div className="grid gap-3">
+                {skillLessons.map(lesson => (
+                  <LessonCard 
+                    key={lesson.id} 
+                    lesson={lesson} 
+                    onClick={() => handleLessonClick(lesson)} 
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
           <div>
             <h3 className="text-lg font-black text-emerald-800 mb-4 flex items-center gap-2">
               <BookOpen className="text-blue-500" size={20} /> NGỮ PHÁP (GRAMMAR)
@@ -2645,13 +2982,25 @@ Return JSON:
           )}
         </div>
 
-        <button 
-          onClick={handleStartWarmup}
-          className="w-full bg-emerald-600 text-white py-4 rounded-2xl font-bold hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-100 flex items-center justify-center gap-2 group"
-        >
-          <Flame className="group-hover:animate-bounce" />
-          KHỞI ĐỘNG TRƯỚC KHI NHẢY (WARM-UP)
-        </button>
+        <div className="flex flex-col sm:flex-row gap-4">
+          <button 
+            onClick={handleStartWarmup}
+            className="flex-1 bg-emerald-600 text-white py-4 rounded-2xl font-bold hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-100 flex items-center justify-center gap-2 group"
+          >
+            <Flame className="group-hover:animate-bounce" />
+            KHỞI ĐỘNG (WARM-UP)
+          </button>
+          <button 
+            onClick={() => {
+              setIsTutorOpen(true);
+              askFrogTutor(`Hãy giảng cho mình về bài học: ${selectedLesson.title}. Nội dung: ${selectedLesson.content}`);
+            }}
+            className="flex-1 bg-blue-600 text-white py-4 rounded-2xl font-bold hover:bg-blue-700 transition-all shadow-lg shadow-blue-100 flex items-center justify-center gap-2 group"
+          >
+            <MessageSquare className="group-hover:scale-110 transition-transform" />
+            HỎI GIA SƯ AI
+          </button>
+        </div>
       </div>
     );
   };
